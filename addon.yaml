@@ -1,0 +1,29 @@
+# TrueNAS integration, read only: one entry per TrueNAS (SCALE / Community Edition 25.04 or newer).
+# Shows each pool's health, space and last scrub, disk temperatures, TrueNAS's own alerts and the SMB
+# shares, and alerts when a pool degrades, fills up, a disk runs hot, or a share you depend on goes away.
+# Key: in TrueNAS click the user icon (top right) > My API Keys > Add, name it "hisho"; it shows the key
+# once. Save it as a secret (e.g. TRUENAS_CE_API_KEY) and give its name here. Hisho calls only read
+# methods (pools, disks, alerts, shares, services) over TrueNAS's websocket API; it never changes anything.
+name: truenas
+kind: integration
+title: TrueNAS
+description: "Your TrueNAS: pool health and space, scrubs, disk temperatures, alerts and SMB shares. Read only."
+version: 0.1.1
+you_need:
+  - "TrueNAS SCALE / Community Edition 25.04 or newer"
+  - "A TrueNAS API key"
+provider: provider.py
+secret_rotate: "TrueNAS > user icon (top right) > My API Keys: delete the key and add another"
+entry_label: TrueNAS
+entry_schema:
+  url: str                 # IP or name (https, port 443), e.g. 192.0.2.21
+  api_key: password        # the key (typed, or its secret's name, e.g. TRUENAS_CE_API_KEY)
+  fingerprint: "str?"      # the TrueNAS certificate's SHA-256 (learned by Test / Add)
+  watch_shares: "str?"     # SMB shares other machines depend on, comma-separated (alert if one goes away)
+  disk_warn_c: "int?"      # disk temperature alert, C (default 50)
+  note: "str?"
+entry_form:
+  url: "IP address, e.g. 192.0.2.21"
+  api_key: "API key (paste it, or its secret's name, e.g. TRUENAS_CE_API_KEY)"
+  watch_shares: "Shares to watch, e.g. ProxmoxBackup"
+  note: "Note"
