@@ -8,7 +8,7 @@ name: truenas
 kind: integration
 title: TrueNAS
 description: "Your TrueNAS: pool health and space, scrubs, disk temperatures, alerts and SMB shares. Read only."
-version: 0.1.1
+version: 0.1.2
 you_need:
   - "TrueNAS SCALE / Community Edition 25.04 or newer"
   - "A TrueNAS API key"
@@ -27,3 +27,19 @@ entry_form:
   api_key: "API key (paste it, or its secret's name, e.g. TRUENAS_CE_API_KEY)"
   watch_shares: "Shares to watch, e.g. ProxmoxBackup"
   note: "Note"
+help:
+  url:
+    label: TrueNAS address
+    say: "The address you open TrueNAS at, like 192.0.2.21. Just the IP is enough: Hisho uses https on port 443. Needs TrueNAS 25.04 or newer."
+    get: "https://www.truenas.com/docs/scale/25.04/gettingstarted/install/consolesetupmenuscale/"
+    get_label: Find the TrueNAS address
+  api_key:
+    label: API key
+    say: "In TrueNAS, click the user icon (top right) > My API Keys > Add, and name it hisho. TrueNAS shows the key only once: copy it then. Hisho only reads with it."
+    get: "https://www.truenas.com/docs/scale/25.04/scaletutorials/toptoolbar/managingapikeys/"
+    get_label: How to add an API key
+  watch_shares:
+    label: Shares to watch
+    say: "Optional. SMB shares other machines depend on, separated by commas, like Backups,Media. Hisho alerts if one goes away. Names as shown in TrueNAS under Shares."
+  note:
+    say: "Anything you want to remember about this TrueNAS, like what it stores."
