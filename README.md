@@ -11,7 +11,7 @@ TrueNAS's websocket API.
 
 - You need:
   - TrueNAS SCALE / Community Edition 25.04 or newer
-  - A TrueNAS API key
+  - Its admin login once, so Hisho can make its own read-only user and API key; or an API key made by hand
 - Runs on: the Core machine, inside Hisho Core
 - One entry per TrueNAS, each with:
   - `url` (str, required)
@@ -38,10 +38,23 @@ Its card shows any pool that is degraded or filling, a hot disk or a missing sha
 
 ## Settings
 
-In TrueNAS click the user icon (top right) > My API Keys > Add, name it "hisho"; it shows the key
-once. Paste it on the page, or save it as a secret (e.g. `TRUENAS_CE_API_KEY`) and give its name.
-Add the shares other machines depend on to "Shares to watch". Entries are kept in
-`~/Hisho/System/Config/Addons/truenas.yaml`.
+Add a TrueNAS on its page (**Add-ons > TrueNAS**). **Found on your network** lists the TrueNAS it sees
+(their sign-in page); press **Use this** (or type the address), give it a short name, type an admin login
+(e.g. `truenas_admin`) and its password, and press **Sign in once**. Hisho signs in once over https (the
+certificate is pinned first) and makes:
+
+- user `hisho`: no password, no SMB access, in TrueNAS's built-in Read-only Administrators group,
+- an API key `hisho` for it (`hisho-<date>` if that name is taken).
+
+A TrueNAS API key can do whatever its user can, so this key can only read. If this TrueNAS has no
+Read-only Administrators group, or the read-only key can't read pools, the key is made for the admin you
+signed in with instead and the page says so (Hisho still only calls read methods with it). The admin
+password is used once and not kept; the key is kept only on the Core machine (`~/.hisho-secrets.env`).
+
+Or open **+ add by filling in every field yourself**: in TrueNAS click the user icon (top right) > My API
+Keys > Add, name it "hisho"; it shows the key once. Paste it, or save it as a secret (e.g.
+`TRUENAS_CE_API_KEY`) and give its name. Add the shares other machines depend on to "Shares to watch".
+Entries are kept in `~/Hisho/System/Config/Addons/truenas.yaml`.
 
 ## How to remove
 

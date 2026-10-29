@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0
+
+- Found on your network: the page lists the TrueNAS it sees (their sign-in page), with Use this.
+- Sign in once: type an admin login once and Hisho makes its own user hisho (no password, no SMB, Read-only
+  Administrators group) and an API key for it, over the pinned websocket API; the password is not kept. An existing
+  user is reused and a key name in use gets a dated name. Without a read-only group (or if that key can't read) the
+  key is the admin's, and the page says so. Two-factor admins are told to make the key by hand.
+- Setup help says to use Sign in once, and that a key can do whatever its user can.
+
 ## 0.1.2
 
 - Every field on its setup form says in plain words what it is, and links to where to get it (addon.yaml `help:`, shown by Hisho's dashboard).

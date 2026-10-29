@@ -164,6 +164,137 @@ class Session:
         self.ws.close()
 
 
+# ── sign in once: Hisho makes its own read-only user and API key ─────────
+
+#: What the one-time admin session may call: sign in, find the read-only admin group, make the hisho user and key.
+CONNECT_METHODS = frozenset({"auth.login_ex", "auth.login", "privilege.query", "user.query", "user.create",
+                             "api_key.query", "api_key.create"})
+HISHO_USER = "hisho"
+
+
+class AdminSession(Session):
+    """Signed in with the admin login the owner typed. The password goes over the pinned TLS connection once and
+    is kept nowhere; only CONNECT_METHODS can be called."""
+
+    def __init__(self, entry: dict[str, Any], user: str, password: str, timeout: float = 15):
+        host, port = address(entry)
+        self.ws = _WS(host, port, entry.get("fingerprint"), timeout)
+        self.n = 0
+        try:
+            self._login(user, password)
+        except Exception:
+            self.ws.close()
+            raise
+
+    def _login(self, user: str, password: str) -> None:
+        try:
+            got = self._call("auth.login_ex", [{"mechanism": "PASSWORD_PLAIN", "username": user, "password": password}])
+            kind = str((got or {}).get("response_type") or "")
+        except TrueNASError as exc:
+            if "has no auth.login_ex" not in str(exc):
+                raise
+            kind = "SUCCESS" if self._call("auth.login", [user, password]) is True else "AUTH_ERR"
+        if kind == "OTP_REQUIRED":
+            raise TrueNASError(f"{user} uses two-factor sign-in, which Hisho can't do here; sign in once as an admin "
+                               "without it, or make the key by hand (+ add by filling in every field)")
+        if kind == "EXPIRED":
+            raise TrueNASError(f"TrueNAS says {user}'s password has expired; change it in TrueNAS first")
+        if kind != "SUCCESS":
+            raise TrueNASError(f"TrueNAS refused the sign-in for {user}: check the user name and password")
+
+    def call(self, method: str, *params: Any) -> Any:
+        if method not in CONNECT_METHODS:
+            raise TrueNASError(f"{method} is not on Hisho's sign-in-once list")
+        return self._call(method, list(params))
+
+
+def _readonly_group(s: AdminSession) -> int | None:
+    """The group that holds TrueNAS's built-in Read-only Administrator privilege (role READONLY_ADMIN alone)."""
+    for p in s.call("privilege.query") or []:
+        if list(p.get("roles") or []) == ["READONLY_ADMIN"]:
+            for g in p.get("local_groups") or []:
+                if isinstance(g, dict) and g.get("id") is not None:
+                    return int(g["id"])
+    return None
+
+
+def _key_name(existing: set[str]) -> str:
+    name, n = "hisho", 2
+    if name in existing:
+        name = f"hisho-{time.strftime('%Y%m%d')}"
+        while name in existing:
+            name, n = f"hisho-{time.strftime('%Y%m%d')}-{n}", n + 1
+    return name
+
+
+def _reads_with(entry: dict[str, Any], key: str) -> bool:
+    """Whether a key can read what the card shows (a read-only admin can, on every 25.x we know)."""
+    try:
+        s = Session(entry, key)
+    except TrueNASError:
+        return False
+    try:
+        s.call("system.info")
+        s.call("pool.query")
+        return True
+    except TrueNASError:
+        return False
+    finally:
+        s.close()
+
+
+def connect(values: dict[str, Any], ctx: Any) -> dict[str, Any]:
+    """Sign in once with an admin login, then make user ``hisho`` (no password, no SMB, in the Read-only
+    Administrators group) and an API key for it. If this TrueNAS has no read-only admin group, or that key can't
+    read, the key is made for the admin user instead and the message says so. Returns the entry."""
+    user, password = str(values.get("user") or "").strip(), str(values.get("password") or "")
+    if not user:
+        raise TrueNASError("type the admin user, e.g. truenas_admin")
+    entry = {"url": str(values.get("url") or "").strip()}
+    host, port = address(entry)
+    try:
+        entry["fingerprint"] = server_fingerprint(host, port)
+    except OSError as exc:
+        raise TrueNASError(f"can't reach {host}:{port} ({type(exc).__name__}); check the address and that "
+                           "TrueNAS is on") from None
+    s = AdminSession(entry, user, password)
+    try:
+        names = {str(k.get("name")) for k in s.call("api_key.query") or []}
+        owner, made, why = user, [], ""
+        group = _readonly_group(s)
+        if group is None:
+            why = "this TrueNAS has no Read-only Administrators group"
+        else:
+            try:
+                if not s.call("user.query", [["username", "=", HISHO_USER]]):
+                    s.call("user.create", {"username": HISHO_USER, "full_name": "Hisho (read only)",
+                                           "group_create": True, "groups": [group], "password_disabled": True,
+                                           "smb": False})
+                    made.append(f"read-only user {HISHO_USER}")
+                owner = HISHO_USER
+            except TrueNASError as exc:
+                why = f"TrueNAS would not make user {HISHO_USER} ({str(exc)[:120]})"
+        name = _key_name(names)
+        key = (s.call("api_key.create", {"name": name, "username": owner}) or {}).get("key")
+        if owner == HISHO_USER and key and not _reads_with(entry, key):
+            why = "the read-only key could not read pools on this TrueNAS"
+            names.add(name)
+            name, owner = _key_name(names), user
+            key = (s.call("api_key.create", {"name": name, "username": owner}) or {}).get("key")
+    finally:
+        s.close()
+    if not key:
+        raise TrueNASError("TrueNAS made the key but did not show it; try again")
+    made.append(f"API key {name}")
+    if owner == HISHO_USER:
+        say = "Hisho can only read (pools, disks, alerts, shares)."
+    else:
+        say = (f"The key acts as {owner} ({why}), so it could change things; Hisho only ever calls read methods "
+               "with it.")
+    return {"ok": True, "entry": {**entry, "api_key": key},
+            "message": f"Made {' and '.join(made)} on {host}. {say} Your admin password was used once and not kept."}
+
+
 def address(entry: dict[str, Any]) -> tuple[str, int]:
     text = str(entry.get("url") or "").strip().rstrip("/")
     if not text:
