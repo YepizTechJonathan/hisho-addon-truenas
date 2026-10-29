@@ -2,27 +2,32 @@
 # Shows each pool's health, space and last scrub, disk temperatures, TrueNAS's own alerts and the SMB
 # shares, and alerts when a pool degrades, fills up, a disk runs hot, or a share you depend on goes away.
 # Add one: Found on your network lists the TrueNAS it sees; Use this, then Sign in once with an admin
-# (e.g. truenas_admin): Hisho makes its own user "hisho" (no password, Read-only Administrators group) and
-# an API key for it; the admin password is used once and not kept. Or make a key by hand (user icon >
+# (e.g. truenas_admin): Hisho makes its own user hisho-<machine> (no password, Read-only Administrators group;
+# a name in use gets -2, -3...) and an API key hisho-<machine> for it; the admin password is used once and not kept.
+# Remove from TrueNAS (the admin login once more) deletes exactly that key and user (entry field made). Or make a key by hand (user icon >
 # My API Keys > Add). Hisho calls only read methods (pools, disks, alerts, shares, services) over
 # TrueNAS's websocket API; it never changes anything.
 name: truenas
 kind: integration
 title: TrueNAS
 description: "Your TrueNAS: pool health and space, scrubs, disk temperatures, alerts and SMB shares. Read only."
-version: 0.2.0
+version: 0.3.0
 you_need:
   - "TrueNAS SCALE / Community Edition 25.04 or newer"
-  - "Its admin login once, so Hisho can make its own read-only user and API key; or an API key made by hand"
+  - "Its admin login once, so Hisho can make its own read-only user and API key (and once more if you remove it); or an API key made by hand"
 provider: provider.py
 secret_rotate: "TrueNAS > user icon (top right) > My API Keys: delete the key and add another"
 entry_label: TrueNAS
 discover:                  # Found on your network: TrueNAS's API version list (its sign-in page names nothing)
   - {http: "https://{ip}/api/versions", match: '^\["v2\d\.\d+', title: "TrueNAS at {ip}", fill: {url: "{ip}"}}
-connect:                   # Sign in once: provider.connect makes user hisho (read only) and its API key
+connect:                   # Sign in once: provider.connect makes user hisho-<machine> (read only) and its API key
   label: Sign in once
-  say: "Hisho signs in once to make its own read-only user (hisho) and API key. Your password is not kept."
+  say: "Hisho signs in once to make its own read-only user (hisho-<this machine>) and API key. It changes nothing that is already there. Your password is not kept."
   form: [url]
+  fields: {user: "Admin user (e.g. truenas_admin)", password: "Admin password"}
+disconnect:                # Remove from TrueNAS: provider.disconnect deletes exactly what made lists
+  label: Remove from TrueNAS
+  say: "Hisho signs in once more to delete only what it made for this TrueNAS: its API key and its read-only user. Your password is not kept."
   fields: {user: "Admin user (e.g. truenas_admin)", password: "Admin password"}
 entry_schema:
   url: str                 # IP or name (https, port 443), e.g. 192.0.2.21
@@ -31,6 +36,7 @@ entry_schema:
   watch_shares: "str?"     # SMB shares other machines depend on, comma-separated (alert if one goes away)
   disk_warn_c: "int?"      # disk temperature alert, C (default 50)
   note: "str?"
+  made: "map?"             # what Sign in once made (user name/id, API key names/ids; never the key), for Remove from TrueNAS
 entry_form:
   url: "IP address, e.g. 192.0.2.21"
   api_key: "API key (paste it, or its secret's name, e.g. TRUENAS_CE_API_KEY)"
@@ -44,7 +50,7 @@ help:
     get_label: Find the TrueNAS address
   api_key:
     label: API key
-    say: "Easiest: use Sign in once above, and Hisho makes its own read-only user and key. By hand: in TrueNAS, click the user icon (top right) > My API Keys > Add, and name it hisho. A key can do whatever its user can, so make it for a read-only admin if you can. TrueNAS shows the key only once: copy it then. Hisho only reads with it."
+    say: "Easiest: use Sign in once above, and Hisho makes its own read-only user and key. By hand: in TrueNAS, click the user icon (top right) > My API Keys > Add, and name it hisho-<this machine>. A key can do whatever its user can, so make it for a read-only admin if you can. TrueNAS shows the key only once: copy it then. Hisho only reads with it."
     get: "https://www.truenas.com/docs/scale/25.04/scaletutorials/toptoolbar/managingapikeys/"
     get_label: How to add an API key
   watch_shares:

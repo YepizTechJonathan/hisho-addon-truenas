@@ -11,7 +11,7 @@ TrueNAS's websocket API.
 
 - You need:
   - TrueNAS SCALE / Community Edition 25.04 or newer
-  - Its admin login once, so Hisho can make its own read-only user and API key; or an API key made by hand
+  - Its admin login once, so Hisho can make its own read-only user and API key (and once more if you remove it); or an API key made by hand
 - Runs on: the Core machine, inside Hisho Core
 - One entry per TrueNAS, each with:
   - `url` (str, required)
@@ -20,6 +20,7 @@ TrueNAS's websocket API.
   - `watch_shares` (str, optional)
   - `disk_warn_c` (int, optional)
   - `note` (str, optional)
+  - `made` (map, optional)
 
 ## How to install
 
@@ -43,8 +44,14 @@ Add a TrueNAS on its page (**Add-ons > TrueNAS**). **Found on your network** lis
 (e.g. `truenas_admin`) and its password, and press **Sign in once**. Hisho signs in once over https (the
 certificate is pinned first) and makes:
 
-- user `hisho`: no password, no SMB access, in TrueNAS's built-in Read-only Administrators group,
-- an API key `hisho` for it (`hisho-<date>` if that name is taken).
+- user `hisho-<machine>`, where `<machine>` is the name of the machine Hisho runs on (e.g. `hisho-kihon`): no
+  password, no SMB access, in TrueNAS's built-in Read-only Administrators group (TrueNAS also makes it a group of
+  the same name),
+- an API key `hisho-<machine>` for it.
+
+Hisho only makes new things: it never reuses or changes a user, group or key that is already there (another
+Hisho's, or yours). A name in use gets the next free suffix (`hisho-kihon-2`). The entry remembers what it made
+(`made`: names and ids, never the key).
 
 A TrueNAS API key can do whatever its user can, so this key can only read. If this TrueNAS has no
 Read-only Administrators group, or the read-only key can't read pools, the key is made for the admin you
@@ -52,13 +59,18 @@ signed in with instead and the page says so (Hisho still only calls read methods
 password is used once and not kept; the key is kept only on the Core machine (`~/.hisho-secrets.env`).
 
 Or open **+ add by filling in every field yourself**: in TrueNAS click the user icon (top right) > My API
-Keys > Add, name it "hisho"; it shows the key once. Paste it, or save it as a secret (e.g.
+Keys > Add, name it "hisho-<this machine>"; it shows the key once. Paste it, or save it as a secret (e.g.
 `TRUENAS_CE_API_KEY`) and give its name. Add the shares other machines depend on to "Shares to watch".
 Entries are kept in `~/Hisho/System/Config/Addons/truenas.yaml`.
 
+**Remove from TrueNAS** (on an entry made with Sign in once) asks for the admin login once more, over the
+certificate Hisho remembers, and deletes exactly what that entry's `made` lists: its API key(s) (matched by id and
+name) and the user Hisho made, with the group made for it. Anything already gone is said, not an error. Then
+Hisho forgets the entry.
+
 ## How to remove
 
-**Add-ons > Store > TrueNAS > Remove**, or `hisho addon remove truenas`. Its card and page go away; your settings stay in `~/Hisho/System/Config/Addons/truenas.yaml`, so installing it again picks up where you left off.
+**Add-ons > Store > TrueNAS > Remove**, or `hisho addon remove truenas`. Its card and page go away; your settings stay in `~/Hisho/System/Config/Addons/truenas.yaml`, so installing it again picks up where you left off. Nothing on the TrueNAS is changed: Hisho's user and key stay. To delete those too, press **Remove from TrueNAS** on each entry first.
 
 ## License
 

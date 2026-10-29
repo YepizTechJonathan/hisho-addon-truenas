@@ -166,18 +166,41 @@ class Session:
 
 # ── sign in once: Hisho makes its own read-only user and API key ─────────
 
-#: What the one-time admin session may call: sign in, find the read-only admin group, make the hisho user and key.
-CONNECT_METHODS = frozenset({"auth.login_ex", "auth.login", "privilege.query", "user.query", "user.create",
-                             "api_key.query", "api_key.create"})
-HISHO_USER = "hisho"
+#: What the one-time admin session may call: sign in, find the read-only admin group and the names in use, make
+#: Hisho's user and key.
+CONNECT_METHODS = frozenset({"auth.login_ex", "auth.login", "privilege.query", "user.query", "group.query",
+                             "user.create", "api_key.query", "api_key.create"})
+#: What Remove from TrueNAS may call: sign in, look up, and delete the key and user Sign in once made.
+DISCONNECT_METHODS = frozenset({"auth.login_ex", "auth.login", "user.query", "api_key.query", "api_key.delete",
+                                "user.delete"})
+
+
+def _machine() -> str:
+    """This machine's name for the names Hisho makes (lower-case letters, digits and dashes)."""
+    try:
+        from hisho import fleet_config
+        name = fleet_config.local_name()
+    except Exception:  # noqa: BLE001
+        name = socket.gethostname()
+    return re.sub(r"[^a-z0-9-]+", "-", str(name).split(".")[0].lower()).strip("-")[:20].strip("-") or "hisho"
+
+
+def _free(base: str, taken: set[str]) -> str:
+    """``base``, or ``base-2``, ``base-3``... the first one not in ``taken`` (an existing name is never reused)."""
+    name, n = base, 2
+    while name in taken:
+        name, n = f"{base}-{n}", n + 1
+    return name
 
 
 class AdminSession(Session):
     """Signed in with the admin login the owner typed. The password goes over the pinned TLS connection once and
-    is kept nowhere; only CONNECT_METHODS can be called."""
+    is kept nowhere; only the methods in ``allowed`` (CONNECT_METHODS, or DISCONNECT_METHODS) can be called."""
 
-    def __init__(self, entry: dict[str, Any], user: str, password: str, timeout: float = 15):
+    def __init__(self, entry: dict[str, Any], user: str, password: str, timeout: float = 15,
+                 allowed: frozenset[str] = CONNECT_METHODS):
         host, port = address(entry)
+        self.allowed = allowed
         self.ws = _WS(host, port, entry.get("fingerprint"), timeout)
         self.n = 0
         try:
@@ -203,7 +226,7 @@ class AdminSession(Session):
             raise TrueNASError(f"TrueNAS refused the sign-in for {user}: check the user name and password")
 
     def call(self, method: str, *params: Any) -> Any:
-        if method not in CONNECT_METHODS:
+        if method not in self.allowed:
             raise TrueNASError(f"{method} is not on Hisho's sign-in-once list")
         return self._call(method, list(params))
 
@@ -216,15 +239,6 @@ def _readonly_group(s: AdminSession) -> int | None:
                 if isinstance(g, dict) and g.get("id") is not None:
                     return int(g["id"])
     return None
-
-
-def _key_name(existing: set[str]) -> str:
-    name, n = "hisho", 2
-    if name in existing:
-        name = f"hisho-{time.strftime('%Y%m%d')}"
-        while name in existing:
-            name, n = f"hisho-{time.strftime('%Y%m%d')}-{n}", n + 1
-    return name
 
 
 def _reads_with(entry: dict[str, Any], key: str) -> bool:
@@ -244,9 +258,11 @@ def _reads_with(entry: dict[str, Any], key: str) -> bool:
 
 
 def connect(values: dict[str, Any], ctx: Any) -> dict[str, Any]:
-    """Sign in once with an admin login, then make user ``hisho`` (no password, no SMB, in the Read-only
-    Administrators group) and an API key for it. If this TrueNAS has no read-only admin group, or that key can't
-    read, the key is made for the admin user instead and the message says so. Returns the entry."""
+    """Sign in once with an admin login, then make user ``hisho-<machine>`` (no password, no SMB, in the Read-only
+    Administrators group, with its own new group) and an API key ``hisho-<machine>`` for it. A name already in use
+    (another Hisho's, or yours) gets a free numeric suffix: nothing that exists is reused or changed. If this
+    TrueNAS has no read-only admin group, or that key can't read, the key is made for the admin user instead and
+    the message says so. ``made`` in the entry lists what was made (names and ids) for Remove from TrueNAS."""
     user, password = str(values.get("user") or "").strip(), str(values.get("password") or "")
     if not user:
         raise TrueNASError("type the admin user, e.g. truenas_admin")
@@ -257,42 +273,95 @@ def connect(values: dict[str, Any], ctx: Any) -> dict[str, Any]:
     except OSError as exc:
         raise TrueNASError(f"can't reach {host}:{port} ({type(exc).__name__}); check the address and that "
                            "TrueNAS is on") from None
+    base = f"hisho-{_machine()}"
     s = AdminSession(entry, user, password)
+    made: dict[str, Any] = {"api_keys": []}
     try:
-        names = {str(k.get("name")) for k in s.call("api_key.query") or []}
-        owner, made, why = user, [], ""
+        key_names = {str(k.get("name")) for k in s.call("api_key.query") or []}
+        owner, why = user, ""
         group = _readonly_group(s)
         if group is None:
             why = "this TrueNAS has no Read-only Administrators group"
         else:
+            taken = ({str(u.get("username")) for u in s.call("user.query") or []}
+                     | {str(g.get("group")) for g in s.call("group.query") or []})
+            me = _free(base, taken)
             try:
-                if not s.call("user.query", [["username", "=", HISHO_USER]]):
-                    s.call("user.create", {"username": HISHO_USER, "full_name": "Hisho (read only)",
-                                           "group_create": True, "groups": [group], "password_disabled": True,
-                                           "smb": False})
-                    made.append(f"read-only user {HISHO_USER}")
-                owner = HISHO_USER
+                got = s.call("user.create", {"username": me, "full_name": "Hisho (read only)",
+                                             "group_create": True, "groups": [group], "password_disabled": True,
+                                             "smb": False}) or {}
+                made["user"] = {"name": me, "id": got.get("id") if isinstance(got, dict) else got, "group": me}
+                owner = me
             except TrueNASError as exc:
-                why = f"TrueNAS would not make user {HISHO_USER} ({str(exc)[:120]})"
-        name = _key_name(names)
-        key = (s.call("api_key.create", {"name": name, "username": owner}) or {}).get("key")
-        if owner == HISHO_USER and key and not _reads_with(entry, key):
+                why = f"TrueNAS would not make user {me} ({str(exc)[:120]})"
+        name = _free(base, key_names)
+        got = s.call("api_key.create", {"name": name, "username": owner}) or {}
+        key = got.get("key")
+        made["api_keys"].append({"name": name, "id": got.get("id")})
+        if owner != user and key and not _reads_with(entry, key):
             why = "the read-only key could not read pools on this TrueNAS"
-            names.add(name)
-            name, owner = _key_name(names), user
-            key = (s.call("api_key.create", {"name": name, "username": owner}) or {}).get("key")
+            key_names.add(name)
+            name, owner = _free(base, key_names), user
+            got = s.call("api_key.create", {"name": name, "username": owner}) or {}
+            key = got.get("key")
+            made["api_keys"].append({"name": name, "id": got.get("id")})
     finally:
         s.close()
     if not key:
         raise TrueNASError("TrueNAS made the key but did not show it; try again")
-    made.append(f"API key {name}")
-    if owner == HISHO_USER:
+    did = ([f"read-only user {made['user']['name']}"] if made.get("user") else []) + [f"API key {name}"]
+    if owner != user:
         say = "Hisho can only read (pools, disks, alerts, shares)."
     else:
         say = (f"The key acts as {owner} ({why}), so it could change things; Hisho only ever calls read methods "
                "with it.")
-    return {"ok": True, "entry": {**entry, "api_key": key},
-            "message": f"Made {' and '.join(made)} on {host}. {say} Your admin password was used once and not kept."}
+    return {"ok": True, "entry": {**entry, "api_key": key, "made": made},
+            "message": f"Made {' and '.join(did)} on {host}; nothing that was there before was changed. {say} "
+                       "Your admin password was used once and not kept."}
+
+
+# ── Remove from TrueNAS: delete exactly what Sign in once made ────────────
+
+def disconnect(entry: dict[str, Any], login: dict[str, Any], ctx: Any) -> dict[str, Any]:
+    """Remove from TrueNAS: sign in once with an admin login (over the certificate the entry remembers) and delete
+    exactly what ``made`` lists: its API key(s), by id and name, and the user (with the group made for it) only
+    when Hisho made that user. Anything already gone is said, not an error. Nothing else is touched."""
+    made = entry.get("made") or {}
+    if not isinstance(made, dict) or not (made.get("api_keys") or made.get("user")):
+        return {"ok": False, "error": "Hisho didn't make this entry's key by signing in once, so there is nothing "
+                                      "of Hisho's to remove; delete the key in TrueNAS yourself"}
+    u = made.get("user") or {}
+    if u and not str(u.get("name") or "").startswith("hisho-"):
+        raise TrueNASError(f"{u.get('name')} is not a user Hisho makes; nothing was deleted")
+    if not entry.get("fingerprint"):
+        raise TrueNASError("this entry remembers no certificate, so Hisho won't send your login; press Test first")
+    host, _ = address(entry)
+    s = AdminSession(entry, str(login.get("user") or "").strip(), str(login.get("password") or ""),
+                     allowed=DISCONNECT_METHODS)
+    done, gone = [], []
+    try:
+        for k in made.get("api_keys") or []:
+            by = [["id", "=", k["id"]]] if k.get("id") is not None else [["name", "=", str(k.get("name"))]]
+            rows = [r for r in s.call("api_key.query", by) or [] if str(r.get("name")) == str(k.get("name"))]
+            if rows:
+                s.call("api_key.delete", rows[0]["id"])
+                done.append(f"API key {k.get('name')}")
+            else:
+                gone.append(f"API key {k.get('name')}")
+        if u:
+            rows = [r for r in s.call("user.query", [["username", "=", u["name"]]]) or []
+                    if u.get("id") is None or r.get("id") == u.get("id")]
+            if rows:
+                s.call("user.delete", rows[0]["id"], {"delete_group": True})
+                done.append(f"user {u['name']}")
+            else:
+                gone.append(f"user {u['name']}")
+    finally:
+        s.close()
+    said = "; ".join(x for x in ["deleted " + ", ".join(done) if done else "",
+                                 "already gone: " + ", ".join(gone) if gone else ""] if x)
+    return {"ok": True, "message": f"On {host}: {said}. Nothing else was touched. Your admin password was used once "
+                                   "and not kept."}
 
 
 def address(entry: dict[str, Any]) -> tuple[str, int]:
